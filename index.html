@@ -1,0 +1,2433 @@
+<!DOCTYPE html>
+<!--
+  Gesture Deck — present PDF or image decks hands-free.
+
+  SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+  Required Notice: Copyright (c) 2026 Lavish Tandon
+  Required Notice: Commercial use needs a separate written license. Contact the copyright holder through the original GitHub repository of this project.
+  Terms: https://polyformproject.org/licenses/noncommercial/1.0.0 (full text in the LICENSE file)
+
+  pdf.js and MediaPipe are loaded from CDNs at runtime under their own
+  licenses; they are not part of this file.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gesture Deck</title>
+<meta name="description" content="Present PDF or image decks hands-free: reach to change slides, point for a laser pointer. Runs entirely in your browser.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230a0a0c'/%3E%3Ccircle cx='16' cy='16' r='6' fill='%236ee7ff'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #0a0a0c;
+    --panel: #141418;
+    --panel-border: #26262e;
+    --accent: #6ee7ff;
+    --text: #e8e8ec;
+    --text-dim: #7a7a86;
+    --danger: #ff6e6e;
+    --warn: #ffc46e;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    overflow: hidden;
+    user-select: none;
+  }
+
+  #app {
+    position: relative;
+    width: 100vw;
+    height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg);
+  }
+
+  /* ---------- Drop zone / empty state ---------- */
+  #dropzone {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    z-index: 10;
+    transition: background 0.15s ease;
+  }
+  #dropzone.dragover {
+    background: radial-gradient(circle at center, rgba(110,231,255,0.08), transparent 70%);
+  }
+  #dropzone.hidden { display: none; }
+
+  .dz-card {
+    width: min(560px, 100%);
+    padding: 40px 36px 28px;
+    border: 1.5px dashed #35353f;
+    border-radius: 20px;
+    text-align: center;
+    background: rgba(20,20,24,0.4);
+    transition: border-color 0.15s ease, background 0.15s ease;
+    pointer-events: none;
+  }
+  #dropzone.dragover .dz-card {
+    border-color: var(--accent);
+    background: rgba(20,20,24,0.7);
+  }
+
+  .dz-brand {
+    font-size: 11.5px;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--accent);
+    opacity: 0.85;
+    margin-bottom: 22px;
+  }
+
+  .dz-icon {
+    width: 52px;
+    height: 52px;
+    margin: 0 auto 18px;
+    opacity: 0.7;
+  }
+  .dz-icon svg { width: 100%; height: 100%; stroke: var(--accent); }
+
+  .dz-title {
+    font-size: 19px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    margin-bottom: 8px;
+  }
+  .dz-sub {
+    font-size: 13.5px;
+    color: var(--text-dim);
+    line-height: 1.6;
+    margin-bottom: 24px;
+  }
+
+  .dz-btn {
+    pointer-events: all;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 11px 22px;
+    background: var(--accent);
+    color: #04222a;
+    border: none;
+    border-radius: 10px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: transform 0.1s ease, box-shadow 0.15s ease;
+  }
+  .dz-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 20px rgba(110,231,255,0.25);
+  }
+  .dz-btn:active { transform: translateY(0); }
+
+  .dz-hint {
+    margin-top: 16px;
+    font-size: 11.5px;
+    color: #4d4d58;
+    letter-spacing: 0.02em;
+  }
+
+  .dz-features {
+    display: flex;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 8px 20px;
+    margin-top: 24px;
+    padding-top: 18px;
+    border-top: 1px solid #1f1f26;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+
+  #file-input { display: none; }
+
+  /* ---------- Loading state ---------- */
+  #loading {
+    position: absolute;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 15;
+    flex-direction: column;
+    gap: 16px;
+  }
+  #loading.active { display: flex; }
+  .spinner {
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    border: 2.5px solid #26262e;
+    border-top-color: var(--accent);
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #loading-text {
+    font-size: 13px;
+    color: var(--text-dim);
+  }
+
+  /* ---------- Stage / slide canvas ---------- */
+  #stage {
+    position: absolute;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    background: #000;
+  }
+  #stage.active { display: flex; }
+
+  #slide-canvas-wrap {
+    position: relative;
+    max-width: 100%;
+    max-height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  #slide-canvas {
+    max-width: 100vw;
+    max-height: 100vh;
+    box-shadow: 0 0 80px rgba(0,0,0,0.6);
+  }
+
+  /* Directional entry — the transform lives on the canvas, not its wrapper,
+     so the wrapper's rect stays put for the laser-pointer mapping. */
+  #slide-canvas.enter-next { animation: enterNext 0.26s cubic-bezier(0.2, 0.7, 0.2, 1); }
+  #slide-canvas.enter-prev { animation: enterPrev 0.26s cubic-bezier(0.2, 0.7, 0.2, 1); }
+  #slide-canvas.enter-fade { animation: enterFade 0.28s ease; }
+  @keyframes enterNext { from { opacity: 0.3; transform: translateX(32px); } to { opacity: 1; transform: none; } }
+  @keyframes enterPrev { from { opacity: 0.3; transform: translateX(-32px); } to { opacity: 1; transform: none; } }
+  @keyframes enterFade { from { opacity: 0.4; } to { opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) {
+    #slide-canvas.enter-next, #slide-canvas.enter-prev { animation: enterFade 0.2s ease; }
+  }
+
+  /* ---------- Laser pointer overlay ---------- */
+  #pointer-canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 25;
+  }
+
+  /* ---------- Gesture feedback on the slide ---------- */
+  .edge-pulse {
+    position: absolute;
+    top: 50%;
+    width: 60px;
+    height: 60px;
+    margin-top: -30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: rgba(10, 10, 12, 0.55);
+    backdrop-filter: blur(6px);
+    border: 1px solid rgba(110, 231, 255, 0.4);
+    opacity: 0;
+    pointer-events: none;
+    z-index: 26;
+  }
+  .edge-pulse.left { left: 28px; }
+  .edge-pulse.right { right: 28px; }
+  .edge-pulse svg { width: 26px; height: 26px; stroke: var(--accent); }
+  .edge-pulse.at-end { border-color: rgba(255, 255, 255, 0.18); }
+  .edge-pulse.at-end svg { stroke: var(--text-dim); }
+  .edge-pulse.show { animation: edgePulse 0.6s ease-out; }
+  .edge-pulse.right.show.at-end { animation: edgeBumpRight 0.45s ease-out; }
+  .edge-pulse.left.show.at-end { animation: edgeBumpLeft 0.45s ease-out; }
+  @keyframes edgePulse {
+    0% { opacity: 0; transform: scale(0.85); }
+    25% { opacity: 1; transform: scale(1); }
+    100% { opacity: 0; transform: scale(1.04); }
+  }
+  @keyframes edgeBumpRight {
+    0% { opacity: 0; transform: translateX(0); }
+    30% { opacity: 1; transform: translateX(8px); }
+    60% { transform: translateX(-3px); }
+    100% { opacity: 0; transform: translateX(0); }
+  }
+  @keyframes edgeBumpLeft {
+    0% { opacity: 0; transform: translateX(0); }
+    30% { opacity: 1; transform: translateX(-8px); }
+    60% { transform: translateX(3px); }
+    100% { opacity: 0; transform: translateX(0); }
+  }
+
+  #slide-pill {
+    position: absolute;
+    bottom: 22px;
+    left: 50%;
+    transform: translateX(-50%) translateY(8px);
+    padding: 7px 14px;
+    border-radius: 999px;
+    background: rgba(10, 10, 12, 0.7);
+    backdrop-filter: blur(8px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    font-size: 12.5px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--text);
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease, transform 0.2s ease;
+    z-index: 31;
+  }
+  #slide-pill.visible { opacity: 1; transform: translateX(-50%); }
+
+  /* ---------- Nav arrows (hover affordance, click works too) ---------- */
+  .nav-arrow {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 14%;
+    display: flex;
+    align-items: center;
+    z-index: 20;
+    opacity: 0;
+    cursor: pointer;
+    transition: opacity 0.15s ease;
+    background: none;
+    border: none;
+    padding: 0;
+  }
+  .nav-arrow:hover { opacity: 1; }
+  .nav-arrow.left { left: 0; justify-content: flex-start; padding-left: 18px; }
+  .nav-arrow.right { right: 0; justify-content: flex-end; padding-right: 18px; }
+  .nav-arrow svg {
+    width: 30px;
+    height: 30px;
+    stroke: var(--text);
+    filter: drop-shadow(0 2px 8px rgba(0,0,0,0.6));
+  }
+
+  /* ---------- Top bar (auto-hides) ---------- */
+  #topbar {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 30;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 20px;
+    background: linear-gradient(to bottom, rgba(0,0,0,0.55), transparent);
+    opacity: 0;
+    transform: translateY(-6px);
+    transition: opacity 0.25s ease, transform 0.25s ease;
+    pointer-events: none;
+  }
+  #topbar.visible {
+    opacity: 1;
+    transform: translateY(0);
+    pointer-events: all;
+  }
+
+  .topbar-group {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .icon-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    border-radius: 9px;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.08);
+    cursor: pointer;
+    transition: background 0.15s ease;
+  }
+  .icon-btn:hover { background: rgba(255,255,255,0.14); }
+  .icon-btn svg { width: 17px; height: 17px; stroke: var(--text); }
+  .icon-btn.active { background: rgba(110,231,255,0.18); border-color: rgba(110,231,255,0.4); }
+  .icon-btn.active svg { stroke: var(--accent); }
+  .icon-btn.busy { opacity: 0.55; animation: pulse 1.2s ease-in-out infinite; } /* still clickable: clicking cancels */
+  .icon-btn.text-icon {
+    font-size: 15px;
+    font-weight: 700;
+    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  }
+
+  #slide-counter {
+    font-size: 12.5px;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-dim);
+    letter-spacing: 0.02em;
+    padding: 0 4px;
+  }
+
+  /* ---------- Bottom progress bar ---------- */
+  #progress-track {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 3px;
+    background: rgba(255,255,255,0.06);
+    z-index: 30;
+  }
+  #progress-fill {
+    height: 100%;
+    background: var(--accent);
+    width: 0%;
+    transition: width 0.25s cubic-bezier(0.4,0,0.2,1);
+  }
+
+  /* ---------- Camera preview + HUD ---------- */
+  #cam-preview {
+    position: absolute;
+    bottom: 22px;
+    right: 22px;
+    width: 240px;
+    aspect-ratio: 4 / 3;
+    border-radius: 14px;
+    overflow: hidden;
+    background: #050505;
+    border: 1px solid rgba(255,255,255,0.1);
+    box-shadow: 0 8px 30px rgba(0,0,0,0.5);
+    z-index: 40;
+    display: none;
+  }
+  #cam-preview.active { display: block; }
+  #cam-video {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transform: scaleX(-1);
+  }
+  /* Not CSS-mirrored: the HUD is drawn in mirrored space in JS so its
+     text and chevrons read the right way round. */
+  #cam-overlay {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+  }
+  #cam-status-dot {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--danger);
+    box-shadow: 0 0 6px rgba(255,110,110,0.8);
+    z-index: 2;
+  }
+  #cam-status-dot.live {
+    background: #6effa0;
+    box-shadow: 0 0 6px rgba(110,255,160,0.8);
+    animation: pulse 1.6s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+  #cam-status-label {
+    position: absolute;
+    bottom: 7px;
+    left: 50%;
+    transform: translateX(-50%);
+    max-width: calc(100% - 16px);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    padding: 3px 9px;
+    border-radius: 999px;
+    background: rgba(0,0,0,0.55);
+    backdrop-filter: blur(4px);
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--text);
+    z-index: 2;
+  }
+  #cam-status-label:empty { display: none; }
+
+  /* ---------- Enable camera button ---------- */
+  #cam-enable-btn {
+    position: absolute;
+    bottom: 22px;
+    right: 22px;
+    z-index: 40;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 16px;
+    background: rgba(20,20,24,0.85);
+    backdrop-filter: blur(8px);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 12px;
+    color: var(--text);
+    font-size: 12.5px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: border-color 0.15s ease, background 0.15s ease, opacity 0.25s ease;
+  }
+  #cam-enable-btn:hover {
+    border-color: rgba(110,231,255,0.4);
+    background: rgba(20,20,24,0.95);
+  }
+  #cam-enable-btn svg { width: 15px; height: 15px; stroke: var(--accent); }
+  #cam-enable-btn.hidden { display: none; }
+  #cam-enable-btn .btn-spinner {
+    display: none;
+    width: 13px;
+    height: 13px;
+    border-radius: 50%;
+    border: 2px solid rgba(255,255,255,0.2);
+    border-top-color: var(--accent);
+    animation: spin 0.8s linear infinite;
+  }
+  #cam-enable-btn.loading .btn-spinner { display: inline-block; }
+  #cam-enable-btn.loading svg { display: none; }
+  #cam-enable-btn.loading { color: var(--text-dim); }
+
+  /* Presenter chrome fades when the mouse is idle. The camera preview comes
+     back whenever a hand is up, since that's when its HUD is the feedback
+     you need; tracking itself never pauses. */
+  #cam-preview { transition: opacity 0.25s ease; }
+  #app.chrome-idle #cam-preview,
+  #app.chrome-idle #cam-enable-btn { opacity: 0; pointer-events: none; }
+  #app.chrome-idle.hand-active #cam-preview { opacity: 1; }
+
+  /* ---------- Toast ---------- */
+  /* Above the guide modal: camera errors often arrive while the first-run
+     guide is open. */
+  #toast {
+    position: absolute;
+    top: 22px;
+    left: 50%;
+    transform: translateX(-50%) translateY(-10px);
+    z-index: 80;
+    max-width: calc(100vw - 32px);
+    padding: 10px 18px;
+    background: rgba(20,20,24,0.92);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 10px;
+    font-size: 12.5px;
+    line-height: 1.45;
+    text-align: center;
+    color: var(--text);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease, transform 0.2s ease;
+  }
+  #toast.visible {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+  #toast.error { border-color: rgba(255,110,110,0.4); color: #ffb3b3; }
+
+  #app.idle-cursor { cursor: none; }
+
+  /* ---------- Gesture guide modal ---------- */
+  #guide-modal {
+    position: absolute;
+    inset: 0;
+    z-index: 70;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    background: rgba(0,0,0,0.6);
+    backdrop-filter: blur(4px);
+  }
+  #guide-modal.visible { display: flex; }
+
+  #guide-card {
+    width: min(470px, 100%);
+    max-height: 88vh;
+    overflow-y: auto;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 18px;
+    padding: 22px 24px 22px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+  }
+
+  #guide-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+  #guide-title {
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+  }
+
+  .guide-item {
+    display: flex;
+    gap: 14px;
+    padding: 12px 0;
+  }
+  .guide-emoji {
+    font-size: 22px;
+    line-height: 1;
+    width: 30px;
+    flex-shrink: 0;
+    text-align: center;
+  }
+  .guide-copy { min-width: 0; }
+  .guide-item-title {
+    font-size: 13.5px;
+    font-weight: 600;
+    margin-bottom: 5px;
+  }
+  .guide-item-desc {
+    font-size: 12.5px;
+    color: var(--text-dim);
+    line-height: 1.55;
+  }
+  .guide-steps {
+    margin: 0;
+    padding-left: 18px;
+    font-size: 12.5px;
+    color: var(--text-dim);
+    line-height: 1.55;
+  }
+  .guide-steps li + li { margin-top: 4px; }
+  .guide-steps b, .guide-item-desc b { color: var(--text); font-weight: 600; }
+
+  .guide-diagram {
+    display: grid;
+    grid-template-columns: 1fr 1.25fr 1fr;
+    gap: 6px;
+    margin: 0 0 6px 44px;
+  }
+  .gd-zone {
+    border-radius: 9px;
+    padding: 9px 6px;
+    text-align: center;
+    font-size: 11.5px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .gd-side {
+    background: rgba(110,231,255,0.12);
+    border: 1px solid rgba(110,231,255,0.3);
+    color: var(--accent);
+  }
+  .gd-mid {
+    background: rgba(255,255,255,0.05);
+    border: 1px dashed rgba(255,255,255,0.25);
+    color: var(--text);
+  }
+
+  kbd {
+    display: inline-block;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 10.5px;
+    line-height: 1.4;
+    padding: 0 5px;
+    border-radius: 5px;
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.12);
+    color: var(--text);
+  }
+
+  .guide-divider {
+    height: 1px;
+    background: var(--panel-border);
+    margin: 4px 0;
+  }
+  .guide-tip {
+    margin-top: 12px;
+    font-size: 11.5px;
+    color: #62626e;
+    line-height: 1.6;
+    padding-top: 14px;
+    border-top: 1px solid var(--panel-border);
+  }
+
+  ::-webkit-scrollbar { display: none; }
+</style>
+</head>
+<body>
+
+<div id="app">
+
+  <!-- Empty / drop state -->
+  <div id="dropzone">
+    <div class="dz-card">
+      <div class="dz-brand">Gesture Deck</div>
+      <div class="dz-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 3v12m0 0l-4-4m4 4l4-4"/>
+          <path d="M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2"/>
+        </svg>
+      </div>
+      <div class="dz-title">Drop a deck to begin</div>
+      <div class="dz-sub">A PDF export of your slides, or several images<br>to use as individual slides.</div>
+      <button class="dz-btn" id="pick-file-btn">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="15" height="15"><path d="M12 5v14M5 12h14"/></svg>
+        Choose file
+      </button>
+      <div class="dz-hint">PDF · PNG · JPG · WEBP — drag &amp; drop anywhere</div>
+      <div class="dz-features">
+        <span>✋ Reach to flip slides</span>
+        <span>☝️ Point to highlight</span>
+        <span>⌨️ Keys still work</span>
+      </div>
+    </div>
+    <input type="file" id="file-input" accept="application/pdf,image/png,image/jpeg,image/webp" multiple>
+  </div>
+
+  <!-- Loading -->
+  <div id="loading">
+    <div class="spinner"></div>
+    <div id="loading-text">Rendering deck…</div>
+  </div>
+
+  <!-- Stage -->
+  <div id="stage">
+    <div id="slide-canvas-wrap">
+      <canvas id="slide-canvas"></canvas>
+    </div>
+
+    <canvas id="pointer-canvas"></canvas>
+
+    <div class="edge-pulse left" id="edge-pulse-left">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+    </div>
+    <div class="edge-pulse right" id="edge-pulse-right">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+    </div>
+
+    <button class="nav-arrow left" id="prev-arrow" aria-label="Previous slide" tabindex="-1">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+    </button>
+    <button class="nav-arrow right" id="next-arrow" aria-label="Next slide" tabindex="-1">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+    </button>
+
+    <div id="topbar">
+      <div class="topbar-group">
+        <div class="icon-btn" id="new-deck-btn" title="Load a different deck">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/></svg>
+        </div>
+        <div id="slide-counter">1 / 1</div>
+      </div>
+      <div class="topbar-group">
+        <div class="icon-btn text-icon" id="guide-btn" title="Gesture guide (?)">?</div>
+        <div class="icon-btn" id="camera-toggle-btn" title="Enable camera (gesture control)">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
+        </div>
+        <div class="icon-btn" id="fullscreen-btn" title="Fullscreen (F)">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 00-2 2v3m18 0V5a2 2 0 00-2-2h-3m0 18h3a2 2 0 002-2v-3M3 16v3a2 2 0 002 2h3"/></svg>
+        </div>
+      </div>
+    </div>
+
+    <div id="slide-pill"></div>
+
+    <div id="progress-track"><div id="progress-fill"></div></div>
+
+    <!-- Camera preview -->
+    <div id="cam-preview">
+      <video id="cam-video" muted playsinline></video>
+      <canvas id="cam-overlay"></canvas>
+      <div id="cam-status-dot"></div>
+      <div id="cam-status-label"></div>
+    </div>
+
+    <button id="cam-enable-btn">
+      <span class="btn-spinner"></span>
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
+      <span id="cam-enable-label">Enable camera</span>
+    </button>
+  </div>
+
+  <div id="toast"></div>
+
+  <!-- Gesture guide -->
+  <div id="guide-modal">
+    <div id="guide-card">
+      <div id="guide-header">
+        <div id="guide-title">Gesture guide</div>
+        <div class="icon-btn" id="guide-close-btn" title="Close">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </div>
+      </div>
+
+      <div class="guide-item">
+        <div class="guide-emoji">✋</div>
+        <div class="guide-copy">
+          <div class="guide-item-title">Reach to change slides</div>
+          <ol class="guide-steps">
+            <li>Raise your hand near the middle with your <b>palm to the camera, fingers up</b>, and hold it still for a moment — the dot in the preview turns blue.</li>
+            <li><b>Reach right</b> past the line for the next slide, <b>reach left</b> for the previous one.</li>
+            <li>Come <b>back to the shaded middle</b> and reach again to keep going — no need to take your hand away.</li>
+          </ol>
+        </div>
+      </div>
+      <div class="guide-diagram">
+        <div class="gd-zone gd-side">‹ Previous</div>
+        <div class="gd-zone gd-mid">✋ Start here</div>
+        <div class="gd-zone gd-side">Next ›</div>
+      </div>
+
+      <div class="guide-item">
+        <div class="guide-emoji">☝️</div>
+        <div class="guide-copy">
+          <div class="guide-item-title">Point to highlight</div>
+          <div class="guide-item-desc">Point with your index finger — any direction — and a laser pointer follows it. The <b>dashed box</b> in the preview maps to the whole slide, so you never have to reach the camera's edges. Lower your finger to hide it.</div>
+        </div>
+      </div>
+
+      <div class="guide-divider"></div>
+
+      <div class="guide-item">
+        <div class="guide-emoji">⌨️</div>
+        <div class="guide-copy">
+          <div class="guide-item-title">Keyboard</div>
+          <div class="guide-item-desc"><kbd>←</kbd> <kbd>→</kbd> or <kbd>Space</kbd> navigate · <kbd>Home</kbd> <kbd>End</kbd> first / last · <kbd>F</kbd> fullscreen · <kbd>?</kbd> this guide</div>
+        </div>
+      </div>
+
+      <div class="guide-tip">Everyday hand movements rarely flip slides: it only arms when you deliberately show your palm and hold it still, and it disarms again after a few seconds without a reach. The reach distance scales with the size of your hand in the picture, within limits, so it adapts as you move closer or further away.</div>
+    </div>
+  </div>
+
+</div>
+
+<script type="module">
+import * as pdfjsLib from 'https://cdn.jsdelivr.net/npm/pdfjs-dist@6.3.289/build/pdf.min.mjs';
+
+// If the CDN's worker can't be started as a real Worker from this origin,
+// pdf.js catches that and parses on the main thread instead ("fake worker")
+// — slightly less smooth on very large decks, but fully functional.
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@6.3.289/build/pdf.worker.min.mjs';
+
+const MEDIAPIPE_WASM_DIR = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm';
+const MEDIAPIPE_BUNDLE_URL = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/vision_bundle.mjs';
+const GESTURE_MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/latest/gesture_recognizer.task';
+
+// @engine:begin  (tests/engine.test.mjs extracts everything down to @engine:end)
+// ============================================================
+// Gesture engine — pure logic, no DOM access. Everything here is a
+// function of landmark data and timestamps, so it can be driven with
+// synthetic frames and tested without a webcam.
+//
+// Coordinate convention: every x handed to the machines below is in
+// *mirrored* space (1 - rawLandmarkX), the way the user sees themselves
+// in the mirrored preview — so larger x means the user's own right.
+// ============================================================
+
+// MediaPipe's canned classifier scores a relaxed or rotated open hand
+// lower than a dead-on frontal one, even though it's plainly still an open
+// palm; 0.5 accepts those while the other canned gestures still only win
+// by genuinely resembling their own pose.
+const GESTURE_CONFIDENCE_MIN = 0.5;
+// Finger geometry fallback: wrist→tip over wrist→PIP. A straight finger is
+// ~1.35, a relaxed 30–45° curl ~1.15–1.25, a fist ~0.65. "Open" needs three
+// genuinely straight fingers, so a relaxed resting hand doesn't qualify.
+const FINGER_OPEN_RATIO = 1.25;
+const POINT_MIN_RATIO = 1.2;
+const POINT_MARGIN = 0.12; // index must clearly beat the other fingers, which may be loosely curled
+const FINGER_JOINTS = [[6, 8], [10, 12], [14, 16], [18, 20]]; // [PIP, TIP]: index, middle, ring, pinky
+
+function fingerRatio(lm, pip, tip, aspect) {
+  const w = lm[0];
+  const dist = (p) => Math.hypot((p.x - w.x) * aspect, p.y - w.y, ((p.z || 0) - (w.z || 0)) * aspect);
+  return dist(lm[tip]) / Math.max(1e-6, dist(lm[pip]));
+}
+
+// 'open' | 'point' | 'other'. The canned classifier wins whenever it's
+// confident about a specific gesture. When it only manages "None" — typical
+// for a sideways palm, or a finger pointing sideways rather than up — fall
+// back to finger geometry, which doesn't care how the hand is rotated.
+function classifyPose(lm, cannedName, cannedScore, aspect) {
+  if (cannedName && cannedName !== 'None' && cannedScore >= GESTURE_CONFIDENCE_MIN) {
+    if (cannedName === 'Open_Palm') return 'open';
+    if (cannedName === 'Pointing_Up') return 'point';
+    return 'other';
+  }
+  const r = FINGER_JOINTS.map(([pip, tip]) => fingerRatio(lm, pip, tip, aspect));
+  if (r[0] >= POINT_MIN_RATIO && r[0] - Math.max(r[1], r[2], r[3]) > POINT_MARGIN) return 'point';
+  if (r.filter(v => v >= FINGER_OPEN_RATIO).length >= 3) return 'open';
+  return 'other';
+}
+
+// Stricter than 'open', and only used to *arm* navigation: a deliberate
+// palm shown to the camera, fingers up and facing it — not a hand hanging at
+// your side or turned edge-on mid-sentence. Firing still accepts any 'open',
+// so a palm that rotates a little during the reach still counts.
+const NAV_ARM_CONFIDENCE = 0.6;
+const NAV_ARM_MIN_WIDTH = 0.5; // palm width (index→pinky knuckle) vs palm length; edge-on hands fall below
+
+function isArmPose(lm, cannedName, cannedScore, pose, aspect) {
+  if (pose !== 'open') return false;
+  const upright = lm[12].y < lm[9].y && lm[9].y < lm[0].y;
+  if (!upright) return false;
+  if (cannedName === 'Open_Palm' && cannedScore >= NAV_ARM_CONFIDENCE) return true;
+  const d = (a, b) => Math.hypot((a.x - b.x) * aspect, a.y - b.y);
+  return d(lm[5], lm[17]) >= NAV_ARM_MIN_WIDTH * d(lm[0], lm[9]);
+}
+
+function palmCentroid(lm) {
+  const idxs = [0, 5, 9, 13, 17]; // wrist + finger MCPs: steadier than any single point
+  let x = 0, y = 0;
+  for (const i of idxs) { x += lm[i].x; y += lm[i].y; }
+  return { x: x / idxs.length, y: y / idxs.length };
+}
+
+// Wrist → middle knuckle, in frame-width units: a proxy for how far the
+// presenter is from the camera.
+function palmLength(lm, aspect) {
+  return Math.hypot(lm[9].x - lm[0].x, (lm[9].y - lm[0].y) / aspect);
+}
+
+// ---- Reach to navigate ------------------------------------------------
+// A lever with a spring-back middle. A deliberate palm (isArmPose) held
+// still near the middle arms it and fixes the center there; reaching `enter`
+// out from the center fires once; easing back within `exit` rearms. Only
+// the reach *out* fires, so the return stroke is free — slide after slide
+// without taking the hand out of frame.
+//
+// Each guard exists for a specific false fire or dead end:
+//  - arming needs the stricter pose, held still in x *and* y, so talking
+//    gestures and a hand at your side don't arm; and it expires after
+//    NAV_ARM_TIMEOUT_MS without a reach, so an armed hand that goes back to
+//    gesturing mid-sentence stops being able to flip slides;
+//  - `enter` scales with palm size (≈1.3 palm-lengths), so it's the same
+//    arm movement at a laptop or standing back from a room camera;
+//  - a reach must arrive fast — either leaving the middle within
+//    NAV_REACH_WINDOW_MS, or still moving outward at ~1 reach-length/s
+//    when it lands (a pause short of the line followed by a push) — so a
+//    resting palm slowly drifting sideways doesn't count;
+//  - after a fire the opposite side stays locked until the palm has rested
+//    in the middle for NAV_LOCK_RELEASE_MS, so overshooting on the way
+//    back can't bounce you back a slide;
+//  - the palm must stay NAV_FIRE_DWELL_MS in the zone, which together with
+//    the EMA absorbs a single-frame landmark jump;
+//  - any other pose past NAV_POSE_GRACE_MS, losing the hand for
+//    NAV_HAND_LOST_MS, or the tracker jumping to a different hand
+//    (numHands is 1, so after a dropout it may pick up your other hand or
+//    someone else's) disarms.
+const NAV_ENTER_MAX = 0.22;
+const NAV_ENTER_MIN = 0.10;
+const NAV_ENTER_PER_PALM = 1.3;
+const NAV_EXIT_FRACTION = 0.55;
+const NAV_ARM_REGION = [0.38, 0.62]; // the center is exactly where the palm settles, so both sides are equally far
+const NAV_ARM_DWELL_MS = 200;
+const NAV_ARM_STILLNESS = 0.035;
+const NAV_ARM_TIMEOUT_MS = 4000;
+const NAV_FIRE_DWELL_MS = 60;
+const NAV_REACH_WINDOW_MS = 450;
+const NAV_REACH_RECENT_MS = 150;
+const NAV_REACH_RECENT_FRACTION = 0.15; // of `enter`, within NAV_REACH_RECENT_MS: ~1 reach-length/s
+const NAV_LOCK_RELEASE_MS = 200;
+const NAV_POSE_GRACE_MS = 250;
+const NAV_HAND_LOST_MS = 300;
+const NAV_JUMP = 0.15;
+const NAV_EMA_TAU_MS = 48; // ≈ α 0.5 per frame at 30fps, but frame-rate independent (webcams drop to 15fps in dim rooms)
+
+function reachFor(palmLen) {
+  if (!(palmLen > 0)) return NAV_ENTER_MAX;
+  return Math.min(NAV_ENTER_MAX, Math.max(NAV_ENTER_MIN, NAV_ENTER_PER_PALM * palmLen));
+}
+
+function createNavMachine() {
+  return {
+    phase: 'idle',        // 'idle' | 'armed' | 'reached'
+    center: null,
+    enter: NAV_ENTER_MAX,
+    exit: NAV_ENTER_MAX * NAV_EXIT_FRACTION,
+    dir: null,            // side that just fired, while phase === 'reached'
+    lock: null,           // side that can't fire until the palm rests in the middle
+    blocked: false,       // a zone entry was refused (too slow, or locked) — the HUD says so
+    x: null,              // EMA-smoothed palm position
+    y: null,
+    rawX: null,
+    hand: null,           // handedness label, to notice the tracker switching hands
+    lastHandT: -Infinity,
+    lastOpenT: -Infinity,
+    settleStartT: null,
+    settleBox: null,
+    armedAt: -Infinity,
+    zoneEnterT: null,
+    lastNeutralT: -Infinity,
+    neutralSinceT: null,
+    hist: [],             // recent { t, x } for the outward-motion check
+  };
+}
+
+function disarmNav(m) {
+  m.phase = 'idle';
+  m.center = null;
+  m.dir = null;
+  m.lock = null;
+  m.blocked = false;
+  m.settleStartT = null;
+  m.zoneEnterT = null;
+  m.lastNeutralT = -Infinity;
+  m.neutralSinceT = null;
+}
+
+function forgetHand(m) {
+  disarmNav(m);
+  m.x = null;
+  m.y = null;
+  m.rawX = null;
+  m.hand = null;
+  m.hist = [];
+}
+
+function outwardMotion(m, zone, nowMs) {
+  const past = m.hist.find(h => nowMs - h.t <= NAV_REACH_RECENT_MS);
+  if (!past) return 0;
+  return (m.x - past.x) * (zone === 'next' ? 1 : -1);
+}
+
+// f: { hasHand, pose, armReady, palmX, palmY, palmLen, hand, nowMs }.
+// Returns 'next' | 'prev' | null. Mutates `m`.
+function stepNavMachine(m, f) {
+  const nowMs = f.nowMs;
+  if (nowMs - m.lastHandT > NAV_HAND_LOST_MS && m.x !== null) forgetHand(m);
+  if (!f.hasHand || f.palmX == null) return null;
+
+  const switched = f.hand && m.hand && f.hand !== m.hand;
+  if (m.x !== null && (switched || Math.abs(f.palmX - m.rawX) > NAV_JUMP)) forgetHand(m);
+
+  const dt = Math.min(200, nowMs - m.lastHandT);
+  m.lastHandT = nowMs;
+  m.rawX = f.palmX;
+  if (f.hand) m.hand = f.hand;
+  if (m.x === null) {
+    m.x = f.palmX;
+    m.y = f.palmY ?? 0.5;
+  } else {
+    const a = 1 - Math.exp(-dt / NAV_EMA_TAU_MS);
+    m.x += (f.palmX - m.x) * a;
+    m.y += ((f.palmY ?? m.y) - m.y) * a;
+  }
+  m.hist.push({ t: nowMs, x: m.x });
+  while (m.hist.length && nowMs - m.hist[0].t > NAV_REACH_RECENT_MS + 100) m.hist.shift();
+  const x = m.x;
+  const isOpen = f.pose === 'open';
+
+  if (isOpen) m.lastOpenT = nowMs;
+  if (nowMs - m.lastOpenT > NAV_POSE_GRACE_MS) {
+    if (m.phase !== 'idle') disarmNav(m);
+    m.settleStartT = null;
+    return null;
+  }
+
+  if (m.phase === 'idle') {
+    const inRegion = x >= NAV_ARM_REGION[0] && x <= NAV_ARM_REGION[1];
+    if (!f.armReady || !inRegion) {
+      m.settleStartT = null;
+      return null;
+    }
+    const b = m.settleBox;
+    if (m.settleStartT === null
+      || Math.max(b.x1, x) - Math.min(b.x0, x) > NAV_ARM_STILLNESS
+      || Math.max(b.y1, m.y) - Math.min(b.y0, m.y) > NAV_ARM_STILLNESS) {
+      m.settleStartT = nowMs;
+      m.settleBox = { x0: x, x1: x, y0: m.y, y1: m.y };
+      return null;
+    }
+    b.x0 = Math.min(b.x0, x);
+    b.x1 = Math.max(b.x1, x);
+    b.y0 = Math.min(b.y0, m.y);
+    b.y1 = Math.max(b.y1, m.y);
+    if (nowMs - m.settleStartT >= NAV_ARM_DWELL_MS) {
+      m.phase = 'armed';
+      m.center = x;
+      m.enter = reachFor(f.palmLen);
+      m.exit = m.enter * NAV_EXIT_FRACTION;
+      m.armedAt = nowMs;
+      m.lastNeutralT = nowMs;
+      m.neutralSinceT = nowMs;
+      m.settleStartT = null;
+    }
+    return null;
+  }
+
+  const off = x - m.center;
+
+  if (m.phase === 'reached') {
+    const returned = m.dir === 'next' ? off < m.exit : off > -m.exit;
+    if (returned) {
+      m.phase = 'armed';
+      m.dir = null;
+      m.armedAt = nowMs;
+      m.lastNeutralT = nowMs; // it just came back through the middle
+      m.neutralSinceT = Math.abs(off) <= m.exit ? nowMs : null;
+    }
+    return null;
+  }
+
+  // armed
+  if (nowMs - m.armedAt > NAV_ARM_TIMEOUT_MS) {
+    disarmNav(m);
+    return null;
+  }
+  if (Math.abs(off) <= m.exit) {
+    m.lastNeutralT = nowMs;
+    if (m.neutralSinceT === null) m.neutralSinceT = nowMs;
+    if (m.lock && nowMs - m.neutralSinceT >= NAV_LOCK_RELEASE_MS) m.lock = null;
+    m.blocked = false;
+    m.zoneEnterT = null;
+    return null;
+  }
+  m.neutralSinceT = null;
+
+  const zone = off >= m.enter ? 'next' : off <= -m.enter ? 'prev' : null;
+  if (!zone) {
+    m.zoneEnterT = null;
+    return null;
+  }
+  if (zone === m.lock) {
+    m.zoneEnterT = null;
+    m.blocked = true;
+    return null;
+  }
+  if (m.zoneEnterT === null) {
+    const arrivedFast = nowMs - m.lastNeutralT <= NAV_REACH_WINDOW_MS;
+    const stillPushing = outwardMotion(m, zone, nowMs) >= NAV_REACH_RECENT_FRACTION * m.enter;
+    if (!arrivedFast && !stillPushing) {
+      m.blocked = true;
+      return null;
+    }
+    m.zoneEnterT = nowMs;
+  }
+  if (!isOpen || nowMs - m.zoneEnterT < NAV_FIRE_DWELL_MS) return null;
+
+  m.phase = 'reached';
+  m.dir = zone;
+  m.lock = zone === 'next' ? 'prev' : 'next';
+  m.blocked = false;
+  m.zoneEnterT = null;
+  return zone;
+}
+
+// ---- Laser pointer ----------------------------------------------------
+// The central POINTER_REGION of the camera frame is stretched over the
+// whole slide, so pointing at a slide corner doesn't mean reaching the
+// camera's corner — where tracking is weakest and the hand half-leaves the
+// frame.
+//
+// It appears after POINTER_ENTER_MS of continuous pointing (a single
+// misread frame while the fingers open or close shouldn't flash it) and
+// stays for POINTER_GRACE_MS after the last pointing frame — including
+// through a brief tracking dropout — so it never flickers. The position
+// only follows the fingertip while actually pointing: once the finger
+// curls or the hand drops, the dot holds still and fades instead of
+// sliding off after it.
+const POINTER_REGION = { x0: 0.18, x1: 0.82, y0: 0.12, y1: 0.76 };
+const POINTER_EMA_TAU_MS = 115; // ≈ α 0.25 per frame at 30fps, frame-rate independent
+const POINTER_ENTER_MS = 60;
+const POINTER_GRACE_MS = 200;
+const POINTER_JUMP = 0.2;       // fingertip jump between frames that can only be a different hand
+
+function createPointerMachine() {
+  return { x: null, y: null, shown: false, lastTipX: null, lastTipY: null, lastHandT: -Infinity, lastPointT: -Infinity, pointSinceT: null };
+}
+
+// tipX (mirrored) / tipY: index fingertip in camera space. Returns
+// { visible, x, y } with x/y normalized to the slide. Mutates `p`.
+function stepPointerMachine(p, { hasHand, isPointing, tipX, tipY, nowMs }) {
+  if (hasHand && tipX != null) {
+    const jumped = p.lastTipX !== null && Math.hypot(tipX - p.lastTipX, tipY - p.lastTipY) > POINTER_JUMP;
+    const dt = Math.min(200, nowMs - p.lastHandT);
+    p.lastTipX = tipX;
+    p.lastTipY = tipY;
+    p.lastHandT = nowMs;
+    if (jumped) {
+      p.shown = false;
+      p.pointSinceT = null;
+    }
+    if (isPointing) {
+      const sx = Math.min(1, Math.max(0, (tipX - POINTER_REGION.x0) / (POINTER_REGION.x1 - POINTER_REGION.x0)));
+      const sy = Math.min(1, Math.max(0, (tipY - POINTER_REGION.y0) / (POINTER_REGION.y1 - POINTER_REGION.y0)));
+      if (p.x === null || jumped || nowMs - p.lastPointT > POINTER_GRACE_MS) {
+        p.x = sx; // fresh start: snap, don't glide in from wherever it last was
+        p.y = sy;
+      } else {
+        const a = 1 - Math.exp(-dt / POINTER_EMA_TAU_MS);
+        p.x += (sx - p.x) * a;
+        p.y += (sy - p.y) * a;
+      }
+      if (p.pointSinceT === null) p.pointSinceT = nowMs;
+      p.lastPointT = nowMs;
+    } else {
+      p.pointSinceT = null;
+    }
+  }
+  if (!p.shown && p.pointSinceT !== null && nowMs - p.pointSinceT >= POINTER_ENTER_MS) p.shown = true;
+  if (p.shown && nowMs - p.lastPointT > POINTER_GRACE_MS) p.shown = false;
+  return { visible: p.shown, x: p.x, y: p.y };
+}
+// @engine:end
+
+// ============================================================
+// State
+// ============================================================
+const state = {
+  mode: null,              // 'pdf' | 'images'
+  pdfDoc: null,
+  slideCount: 0,
+  currentIndex: 0,         // 0-based
+  renderToken: 0,          // invalidates stale in-flight renders
+  loadToken: 0,            // invalidates a deck load superseded by a newer drop
+  pageCache: new Map(),    // index -> { canvas | img, cssWidth, cssHeight, fitKey }
+  pagePending: new Map(),  // index -> { promise, task, cancelled }: one render per page at a time
+  cacheEpoch: 0,           // bumped when the deck or viewport changes; stale renders can't repopulate the cache
+  fittedFor: null,         // viewport the visible slide's bitmap was rendered for
+  images: [],              // object URLs for image mode
+
+  // Camera / hand tracking
+  cameraOn: false,
+  cameraBusy: false,       // true while an enable() is in flight — blocks duplicate getUserMedia calls
+  cameraGeneration: 0,     // bumped on enable/disable/cancel; fences stale async work and stops the tracking loop
+  stream: null,
+  recognizer: null,
+  recognizerLoading: null, // in-flight init promise, shared by concurrent callers
+  recognizerAttempts: 0,
+  nav: createNavMachine(),
+  pointer: createPointerMachine(),
+  lastHandSeenT: -Infinity,
+  lastFrameT: 0,
+  framesSinceEnable: 0,
+  recognizeErrors: 0,      // consecutive recognizeForVideo failures
+  stalled: false,          // the camera stopped delivering frames (already told the user)
+  healthTimer: null,
+  hasShownGuideOnce: false,
+};
+
+const PRERENDER_RADIUS = 2;         // slides rendered ahead/behind so quick flicks never wait
+const CACHE_KEEP_RADIUS = 3;        // anything farther is evicted — full-res page bitmaps are big
+const HAND_ACTIVE_MS = 1500;
+const HANDEDNESS_MIN_SCORE = 0.85;  // below this the label flickers; don't treat that as a hand switch
+const PLAY_TIMEOUT_MS = 6000;
+const MODEL_TIMEOUT_MS = 45000;
+const FRAME_FIRST_TIMEOUT_MS = 4000;
+const FRAME_STALL_MS = 1500;
+const HEALTH_CHECK_MS = 1000;
+const RECOGNIZE_ERROR_LIMIT = 30;
+
+// ============================================================
+// DOM refs
+// ============================================================
+const el = {
+  app: document.getElementById('app'),
+  dropzone: document.getElementById('dropzone'),
+  pickFileBtn: document.getElementById('pick-file-btn'),
+  fileInput: document.getElementById('file-input'),
+  loading: document.getElementById('loading'),
+  loadingText: document.getElementById('loading-text'),
+  stage: document.getElementById('stage'),
+  canvasWrap: document.getElementById('slide-canvas-wrap'),
+  canvas: document.getElementById('slide-canvas'),
+  pointerCanvas: document.getElementById('pointer-canvas'),
+  edgeLeft: document.getElementById('edge-pulse-left'),
+  edgeRight: document.getElementById('edge-pulse-right'),
+  prevArrow: document.getElementById('prev-arrow'),
+  nextArrow: document.getElementById('next-arrow'),
+  topbar: document.getElementById('topbar'),
+  newDeckBtn: document.getElementById('new-deck-btn'),
+  slideCounter: document.getElementById('slide-counter'),
+  slidePill: document.getElementById('slide-pill'),
+  cameraToggleBtn: document.getElementById('camera-toggle-btn'),
+  fullscreenBtn: document.getElementById('fullscreen-btn'),
+  progressFill: document.getElementById('progress-fill'),
+  camPreview: document.getElementById('cam-preview'),
+  camVideo: document.getElementById('cam-video'),
+  camOverlay: document.getElementById('cam-overlay'),
+  camStatusDot: document.getElementById('cam-status-dot'),
+  camStatusLabel: document.getElementById('cam-status-label'),
+  camEnableBtn: document.getElementById('cam-enable-btn'),
+  camEnableLabel: document.getElementById('cam-enable-label'),
+  toast: document.getElementById('toast'),
+  guideBtn: document.getElementById('guide-btn'),
+  guideModal: document.getElementById('guide-modal'),
+  guideCloseBtn: document.getElementById('guide-close-btn'),
+};
+
+// ============================================================
+// Toast
+// ============================================================
+let toastTimer = null;
+function showToast(msg, isError = false) {
+  el.toast.textContent = msg;
+  el.toast.classList.toggle('error', isError);
+  el.toast.classList.add('visible');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.toast.classList.remove('visible'), isError ? 4200 : 2600);
+}
+
+function withTimeout(promise, ms, name, message) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(Object.assign(new Error(message), { name })), ms);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+// ============================================================
+// File loading — dropzone, picker, drag & drop
+// ============================================================
+el.pickFileBtn.addEventListener('click', () => el.fileInput.click());
+
+el.fileInput.addEventListener('change', (e) => {
+  handleFiles(e.target.files);
+  el.fileInput.value = '';
+});
+
+['dragenter', 'dragover'].forEach(evt => {
+  window.addEventListener(evt, (e) => {
+    e.preventDefault();
+    if (state.slideCount === 0) el.dropzone.classList.add('dragover');
+  });
+});
+window.addEventListener('dragleave', (e) => {
+  e.preventDefault();
+  if (e.relatedTarget === null) el.dropzone.classList.remove('dragover');
+});
+window.addEventListener('drop', (e) => {
+  e.preventDefault();
+  el.dropzone.classList.remove('dragover');
+  const files = e.dataTransfer?.files;
+  if (files && files.length) handleFiles(files);
+});
+
+el.newDeckBtn.addEventListener('click', resetDeck);
+
+function invalidateCache() {
+  state.cacheEpoch++;
+  state.pageCache.clear();
+  state.pagePending.clear();
+}
+
+// pdf.js 6 has no PDFDocumentProxy.destroy(); the document is torn down
+// through its loading task. In-flight renders on it then reject, and the
+// render path already treats those as stale.
+function destroyPdf(doc) {
+  doc.loadingTask.destroy().catch(() => {});
+}
+
+function teardownDeck() {
+  state.renderToken++;
+  invalidateCache();
+  if (state.pdfDoc) destroyPdf(state.pdfDoc);
+  state.pdfDoc = null;
+  state.images.forEach(url => URL.revokeObjectURL(url));
+  state.images = [];
+  state.mode = null;
+  state.slideCount = 0;
+  state.currentIndex = 0;
+}
+
+// The camera controls live on the stage, so leaving it with the camera on
+// would leave the LED lit with no way to turn it off.
+function resetDeck() {
+  state.loadToken++;
+  teardownDeck();
+  cancelEnable(true);
+  disableCamera();
+  el.loading.classList.remove('active');
+  el.stage.classList.remove('active');
+  el.dropzone.classList.remove('hidden');
+}
+
+async function handleFiles(fileList) {
+  const files = Array.from(fileList);
+  if (!files.length) return;
+
+  const pdfFile = files.find(f => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'));
+  const imageFiles = files.filter(f => f.type.startsWith('image/'));
+  if (!pdfFile && !imageFiles.length) {
+    showToast('That isn’t a PDF or an image.', true);
+    return;
+  }
+
+  // A second drop while a PDF is still opening must win, even if the first
+  // one happens to finish later.
+  const token = ++state.loadToken;
+  teardownDeck();
+  el.dropzone.classList.add('hidden');
+  el.loadingText.textContent = pdfFile ? 'Rendering deck…' : 'Loading images…';
+  el.loading.classList.add('active');
+
+  try {
+    if (pdfFile) {
+      const doc = await pdfjsLib.getDocument({ data: await pdfFile.arrayBuffer() }).promise;
+      if (token !== state.loadToken) {
+        destroyPdf(doc);
+        return;
+      }
+      state.mode = 'pdf';
+      state.pdfDoc = doc;
+      state.slideCount = doc.numPages;
+    } else {
+      loadImages(imageFiles);
+    }
+    state.currentIndex = 0;
+    invalidateCache();
+    el.stage.classList.add('active');
+    goToSlide(0, { dir: 0 });
+  } catch (err) {
+    if (token !== state.loadToken) return;
+    console.error(err);
+    showToast(err.message || 'Failed to load deck.', true);
+    resetDeck();
+  } finally {
+    if (token === state.loadToken) el.loading.classList.remove('active');
+  }
+}
+
+// ============================================================
+// Viewport — slides are rendered to fit it
+// ============================================================
+// A hidden or minimized window can report 0×0, and fitting a page to that
+// would cache a zero-size bitmap that never repaints. Fall back to the
+// screen; the resize/visibility handlers re-fit once the real size is known.
+function viewportSize() {
+  return {
+    w: window.innerWidth || screen.width || 1280,
+    h: window.innerHeight || screen.height || 720,
+  };
+}
+
+function viewportKey() {
+  const vp = viewportSize();
+  return `${vp.w}x${vp.h}@${window.devicePixelRatio || 1}`;
+}
+
+// ============================================================
+// PDF mode
+// ============================================================
+function cancelledError() {
+  return Object.assign(new Error('Render cancelled'), { name: 'RenderingCancelledException' });
+}
+
+async function renderPdfPage(index, job) {
+  const page = await state.pdfDoc.getPage(index + 1); // pdf.js pages are 1-indexed
+  if (job.cancelled) throw cancelledError();
+  const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+  const unscaled = page.getViewport({ scale: 1 });
+  const fitKey = viewportKey();
+  const vp = viewportSize();
+  const fitScale = Math.min(vp.w / unscaled.width, vp.h / unscaled.height);
+  const viewport = page.getViewport({ scale: fitScale * dpr });
+
+  const offscreen = document.createElement('canvas');
+  offscreen.width = Math.max(1, Math.floor(viewport.width));
+  offscreen.height = Math.max(1, Math.floor(viewport.height));
+  job.task = page.render({ canvasContext: offscreen.getContext('2d'), viewport });
+  await job.task.promise;
+
+  return { canvas: offscreen, cssWidth: viewport.width / dpr, cssHeight: viewport.height / dpr, fitKey };
+}
+
+// ============================================================
+// Image mode
+// ============================================================
+function loadImages(files) {
+  // Natural sort by filename so "slide2" comes before "slide10"
+  const sorted = files.slice().sort((a, b) =>
+    a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
+  );
+  state.mode = 'images';
+  state.images = sorted.map(f => URL.createObjectURL(f));
+  state.slideCount = state.images.length;
+}
+
+function loadImageEl(index) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve({ img, cssWidth: img.naturalWidth, cssHeight: img.naturalHeight, fitKey: null });
+    img.onerror = () => reject(new Error(`Couldn’t load image ${index + 1}.`));
+    img.src = state.images[index];
+  });
+}
+
+// ============================================================
+// Slide cache + rendering
+// ============================================================
+// Image entries are fitted at draw time (fitKey null); PDF bitmaps are only
+// reusable at the viewport they were rendered for.
+function getSlideEntry(index) {
+  const cached = state.pageCache.get(index);
+  if (cached && (cached.fitKey == null || cached.fitKey === viewportKey())) return Promise.resolve(cached);
+  const pending = state.pagePending.get(index);
+  if (pending) return pending.promise;
+
+  const epoch = state.cacheEpoch;
+  const job = { promise: null, task: null, cancelled: false };
+  job.promise = (state.mode === 'pdf' ? renderPdfPage(index, job) : loadImageEl(index))
+    .then((entry) => {
+      // Only keep it if we're still near it — while someone holds an arrow
+      // key, pages that finish long after they've been skipped past would
+      // otherwise pile up hundreds of MB of bitmaps.
+      if (epoch === state.cacheEpoch && Math.abs(index - state.currentIndex) <= CACHE_KEEP_RADIUS) {
+        state.pageCache.set(index, entry);
+      }
+      return entry;
+    })
+    .finally(() => {
+      if (state.pagePending.get(index) === job) state.pagePending.delete(index);
+    });
+  state.pagePending.set(index, job);
+  return job.promise;
+}
+
+function cancelFarRenders(index) {
+  for (const [i, job] of state.pagePending) {
+    if (Math.abs(i - index) <= PRERENDER_RADIUS) continue;
+    job.cancelled = true;
+    if (job.task) job.task.cancel();
+    state.pagePending.delete(i);
+  }
+}
+
+// dir: 1 / -1 slide in from that side, 0 fade, null no animation (resize).
+async function renderSlide(index, dir = null) {
+  const token = ++state.renderToken;
+  let entry;
+  try {
+    entry = await getSlideEntry(index);
+  } catch (err) {
+    if (token === state.renderToken && err.name !== 'RenderingCancelledException') {
+      console.error(err);
+      showToast(err.message || 'Couldn’t render that slide.', true);
+    }
+    return;
+  }
+  if (token !== state.renderToken) return; // a newer render superseded this one
+
+  const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+  const ctx = el.canvas.getContext('2d');
+
+  if (state.mode === 'pdf') {
+    if (!entry.canvas.width || !entry.canvas.height) return;
+    state.fittedFor = entry.fitKey; // what it was rendered for, which may already be stale
+    el.canvas.width = entry.canvas.width;
+    el.canvas.height = entry.canvas.height;
+    el.canvas.style.width = entry.cssWidth + 'px';
+    el.canvas.style.height = entry.cssHeight + 'px';
+    ctx.drawImage(entry.canvas, 0, 0);
+  } else {
+    state.fittedFor = viewportKey();
+    const vp = viewportSize();
+    const fitScale = Math.min(vp.w / entry.cssWidth, vp.h / entry.cssHeight);
+    const cssW = entry.cssWidth * fitScale;
+    const cssH = entry.cssHeight * fitScale;
+    el.canvas.width = Math.round(cssW * dpr);
+    el.canvas.height = Math.round(cssH * dpr);
+    el.canvas.style.width = cssW + 'px';
+    el.canvas.style.height = cssH + 'px';
+    ctx.drawImage(entry.img, 0, 0, el.canvas.width, el.canvas.height);
+  }
+
+  if (dir !== null) {
+    el.canvas.classList.remove('enter-next', 'enter-prev', 'enter-fade');
+    void el.canvas.offsetWidth; // restart the animation
+    el.canvas.classList.add(dir > 0 ? 'enter-next' : dir < 0 ? 'enter-prev' : 'enter-fade');
+  }
+}
+
+function prerenderAdjacent(index) {
+  for (let d = 1; d <= PRERENDER_RADIUS; d++) {
+    for (const i of [index + d, index - d]) { // forward first — that's where talks usually go
+      if (i >= 0 && i < state.slideCount) getSlideEntry(i).catch(() => {});
+    }
+  }
+  for (const key of state.pageCache.keys()) {
+    if (Math.abs(key - index) > CACHE_KEEP_RADIUS) state.pageCache.delete(key);
+  }
+}
+
+// ============================================================
+// Navigation
+// ============================================================
+function updateChrome() {
+  el.slideCounter.textContent = `${state.currentIndex + 1} / ${state.slideCount}`;
+  const pct = state.slideCount > 1 ? (state.currentIndex / (state.slideCount - 1)) * 100 : 100;
+  el.progressFill.style.width = pct + '%';
+}
+
+function clampIndex(i) {
+  return Math.max(0, Math.min(state.slideCount - 1, i));
+}
+
+function goToSlide(index, { dir = null } = {}) {
+  if (!state.slideCount) return;
+  state.currentIndex = clampIndex(index);
+  updateChrome();
+  cancelFarRenders(state.currentIndex);
+  renderSlide(state.currentIndex, dir);
+  prerenderAdjacent(state.currentIndex);
+}
+
+// source: 'gesture' | 'key' | 'click'. Gestures get on-slide feedback
+// (the presenter isn't looking at a button they pressed); anything gets
+// the counter pill when the top bar is hidden.
+function navigate(delta, source) {
+  if (!state.slideCount) return;
+  const dir = delta > 0 ? 1 : -1;
+  const target = clampIndex(state.currentIndex + delta);
+  const fromGesture = source === 'gesture';
+
+  if (target === state.currentIndex) {
+    if (fromGesture) {
+      flashEdge(dir, true);
+      showSlidePill(dir > 0 ? 'Last slide' : 'First slide');
+    }
+    return;
+  }
+  goToSlide(target, { dir });
+  if (fromGesture) flashEdge(dir, false);
+  if (fromGesture || !el.topbar.classList.contains('visible')) showSlidePill();
+}
+
+function jumpTo(index) {
+  if (!state.slideCount) return;
+  const target = clampIndex(index);
+  if (target === state.currentIndex) return;
+  goToSlide(target, { dir: target > state.currentIndex ? 1 : -1 });
+  if (!el.topbar.classList.contains('visible')) showSlidePill();
+}
+
+function flashEdge(dir, atEnd) {
+  const node = dir > 0 ? el.edgeRight : el.edgeLeft;
+  node.classList.remove('show', 'at-end');
+  void node.offsetWidth; // restart the animation
+  node.classList.toggle('at-end', atEnd);
+  node.classList.add('show');
+}
+
+let pillTimer = null;
+function showSlidePill(text) {
+  el.slidePill.textContent = text || `${state.currentIndex + 1} / ${state.slideCount}`;
+  el.slidePill.classList.add('visible');
+  clearTimeout(pillTimer);
+  pillTimer = setTimeout(() => el.slidePill.classList.remove('visible'), 1100);
+}
+
+el.prevArrow.addEventListener('click', () => navigate(-1, 'click'));
+el.nextArrow.addEventListener('click', () => navigate(1, 'click'));
+
+// Clicking a button would otherwise leave it focused, and Space on a
+// focused button both clicks it and hits the keyboard handler: two slides.
+el.stage.addEventListener('mousedown', (e) => {
+  if (e.target.closest('button')) e.preventDefault();
+});
+
+// Page bitmaps are sized to the viewport, so a changed viewport means
+// re-rendering. Also checked on becoming visible: a window restored from
+// minimized doesn't reliably fire `resize`.
+function refitIfNeeded() {
+  if (!state.slideCount || state.fittedFor === viewportKey()) return;
+  invalidateCache();
+  renderSlide(state.currentIndex, null);
+  prerenderAdjacent(state.currentIndex);
+}
+
+let resizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(refitIfNeeded, 150);
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  state.lastFrameT = performance.now(); // camera frames pause while hidden; that isn't a stall
+  refitIfNeeded();
+});
+
+// ============================================================
+// Keyboard
+// ============================================================
+const guideOpen = () => el.guideModal.classList.contains('visible');
+
+window.addEventListener('keydown', (e) => {
+  if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return; // leave Cmd+F, Ctrl+R etc. to the browser
+
+  if (guideOpen()) {
+    if (e.key === 'Escape' || e.key === '?') {
+      e.preventDefault();
+      closeGuide();
+    }
+    return;
+  }
+
+  switch (e.key) {
+    case 'ArrowRight':
+    case 'PageDown':
+    case ' ':
+      if (state.slideCount) { e.preventDefault(); navigate(1, 'key'); }
+      break;
+    case 'ArrowLeft':
+    case 'PageUp':
+      if (state.slideCount) { e.preventDefault(); navigate(-1, 'key'); }
+      break;
+    case 'Home':
+      if (state.slideCount) { e.preventDefault(); jumpTo(0); }
+      break;
+    case 'End':
+      if (state.slideCount) { e.preventDefault(); jumpTo(state.slideCount - 1); }
+      break;
+    case 'f':
+    case 'F':
+      toggleFullscreen();
+      break;
+    case '?':
+      openGuide();
+      break;
+    case 'Escape':
+      if (document.fullscreenElement) document.exitFullscreen();
+      break;
+  }
+});
+
+// ============================================================
+// Fullscreen
+// ============================================================
+function toggleFullscreen() {
+  if (!document.fullscreenElement) {
+    el.app.requestFullscreen().catch(() => showToast('Fullscreen not available', true));
+  } else {
+    document.exitFullscreen();
+  }
+}
+el.fullscreenBtn.addEventListener('click', toggleFullscreen);
+
+// ============================================================
+// Presenter chrome auto-hide
+// ============================================================
+let idleTimer = null;
+function showChrome() {
+  el.topbar.classList.add('visible');
+  el.app.classList.remove('idle-cursor', 'chrome-idle');
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => {
+    el.topbar.classList.remove('visible');
+    el.app.classList.add('chrome-idle');
+    if (document.fullscreenElement) el.app.classList.add('idle-cursor');
+  }, 2600);
+}
+window.addEventListener('mousemove', () => { if (state.slideCount) showChrome(); });
+window.addEventListener('mousedown', () => { if (state.slideCount) showChrome(); });
+
+// ============================================================
+// Gesture guide modal
+// ============================================================
+function openGuide() {
+  clearTimeout(toastTimer);
+  el.toast.classList.remove('visible'); // clear a stale "loading…" note; new toasts still show above the guide
+  el.guideModal.classList.add('visible');
+}
+function closeGuide() { el.guideModal.classList.remove('visible'); }
+el.guideBtn.addEventListener('click', openGuide);
+el.guideCloseBtn.addEventListener('click', closeGuide);
+el.guideModal.addEventListener('click', (e) => {
+  if (e.target === el.guideModal) closeGuide(); // backdrop click
+});
+
+// ============================================================
+// Canvas helper
+// ============================================================
+function prepCanvas(canvas, maxDpr) {
+  const ctx = canvas.getContext('2d');
+  const dpr = Math.min(window.devicePixelRatio || 1, maxDpr);
+  const w = canvas.clientWidth || 1;
+  const h = canvas.clientHeight || 1;
+  const pw = Math.round(w * dpr);
+  const ph = Math.round(h * dpr);
+  if (canvas.width !== pw || canvas.height !== ph) {
+    canvas.width = pw;
+    canvas.height = ph;
+  }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  return { ctx, w, h };
+}
+
+// ============================================================
+// Laser pointer rendering — runs on requestAnimationFrame, decoupled from
+// the camera's frame rate, easing toward the latest tracked position so the
+// dot glides at the display's refresh rate instead of stepping per frame.
+// ============================================================
+const POINTER_RENDER_TAU_MS = 28;
+const POINTER_TRAIL_MS = 350;
+const POINTER_STALE_MS = 300; // no tracking update for this long → treat as gone, never freeze on screen
+
+const pointerView = { visible: false, tx: null, ty: null, dx: null, dy: null, trail: [], raf: null, lastT: null, updatedT: 0 };
+
+function updatePointerView(result) {
+  pointerView.visible = result.visible;
+  pointerView.tx = result.x;
+  pointerView.ty = result.y;
+  pointerView.updatedT = performance.now();
+  if ((pointerView.visible || pointerView.trail.length) && pointerView.raf === null) {
+    pointerView.raf = requestAnimationFrame(renderPointerFrame);
+  }
+}
+
+function renderPointerFrame(t) {
+  const v = pointerView;
+  v.raf = null;
+  const dt = v.lastT === null ? 16.7 : Math.min(100, t - v.lastT);
+  v.lastT = t;
+
+  const live = v.visible && v.tx !== null && t - v.updatedT < POINTER_STALE_MS;
+  if (live) {
+    const fresh = v.dx === null;
+    if (fresh) {
+      v.dx = v.tx;
+      v.dy = v.ty;
+    } else {
+      const k = 1 - Math.exp(-dt / POINTER_RENDER_TAU_MS);
+      v.dx += (v.tx - v.dx) * k;
+      v.dy += (v.ty - v.dy) * k;
+    }
+    // `start` breaks the streak, so a pointer reappearing elsewhere doesn't
+    // draw a line from the tail of the previous one that's still fading.
+    v.trail.push({ x: v.dx, y: v.dy, t, start: fresh });
+  } else {
+    v.dx = null;
+    v.dy = null;
+  }
+  while (v.trail.length && t - v.trail[0].t > POINTER_TRAIL_MS) v.trail.shift();
+
+  drawPointer(v.trail, t);
+
+  if (live || v.trail.length) v.raf = requestAnimationFrame(renderPointerFrame);
+  else v.lastT = null;
+}
+
+function drawPointer(pts, t) {
+  const { ctx } = prepCanvas(el.pointerCanvas, 2.5);
+  if (!pts.length) return;
+
+  // Map onto the slide's actual rendered rect (the wrapper, which the entry
+  // animation doesn't transform), not the full stage — on a letterboxed
+  // slide the pointer should track the content, not the black bars.
+  const slideRect = el.canvasWrap.getBoundingClientRect();
+  const stageRect = el.stage.getBoundingClientRect();
+  const ox = slideRect.left - stageRect.left;
+  const oy = slideRect.top - stageRect.top;
+  const X = (p) => ox + p.x * slideRect.width;
+  const Y = (p) => oy + p.y * slideRect.height;
+  const life = (p) => Math.max(0, 1 - (t - p.t) / POINTER_TRAIL_MS);
+
+  ctx.lineCap = 'round';
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1];
+    const b = pts[i];
+    const l = life(b);
+    if (b.start || l <= 0) continue;
+    ctx.strokeStyle = `rgba(110, 231, 255, ${0.5 * l * l})`;
+    ctx.lineWidth = 1.5 + 7 * l;
+    ctx.beginPath();
+    ctx.moveTo(X(a), Y(a));
+    ctx.lineTo(X(b), Y(b));
+    ctx.stroke();
+  }
+
+  const head = pts[pts.length - 1];
+  const hl = life(head);
+  if (hl <= 0) return;
+  const hx = X(head);
+  const hy = Y(head);
+  const glow = ctx.createRadialGradient(hx, hy, 0, hx, hy, 28);
+  glow.addColorStop(0, `rgba(110, 231, 255, ${0.85 * hl})`);
+  glow.addColorStop(0.35, `rgba(110, 231, 255, ${0.35 * hl})`);
+  glow.addColorStop(1, 'rgba(110, 231, 255, 0)');
+  ctx.fillStyle = glow;
+  ctx.beginPath();
+  ctx.arc(hx, hy, 28, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = `rgba(255, 255, 255, ${0.95 * hl})`;
+  ctx.beginPath();
+  ctx.arc(hx, hy, 4, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function stopPointerRender() {
+  if (pointerView.raf !== null) cancelAnimationFrame(pointerView.raf);
+  Object.assign(pointerView, { visible: false, tx: null, ty: null, dx: null, dy: null, trail: [], raf: null, lastT: null, updatedT: 0 });
+  prepCanvas(el.pointerCanvas, 2.5);
+}
+
+// ============================================================
+// Camera preview HUD — zones, skeleton, palm marker. Drawn in mirrored
+// space (x → 1 - x) because the overlay itself isn't CSS-mirrored.
+// ============================================================
+const HAND_CONNECTIONS = [
+  [0,1],[1,2],[2,3],[3,4],
+  [0,5],[5,6],[6,7],[7,8],
+  [5,9],[9,10],[10,11],[11,12],
+  [9,13],[13,14],[14,15],[15,16],
+  [13,17],[17,18],[18,19],[19,20],
+  [0,17],
+];
+
+function drawHud(frame, nowMs) {
+  const { ctx, w, h } = prepCanvas(el.camOverlay, 2);
+  const nav = state.nav;
+  const { landmarks, pose } = frame;
+
+  if (pose === 'point') {
+    const R = POINTER_REGION;
+    ctx.save();
+    ctx.setLineDash([4, 3]);
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.65)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(R.x0 * w, R.y0 * h, (R.x1 - R.x0) * w, (R.y1 - R.y0) * h);
+    ctx.restore();
+  } else {
+    const armed = nav.phase !== 'idle';
+    const c = armed ? nav.center : 0.5;
+    const enter = armed ? nav.enter : reachFor(frame.palmLen);
+    const exit = armed ? nav.exit : enter * NAV_EXIT_FRACTION;
+    const leftEdge = (c - enter) * w;
+    const rightEdge = (c + enter) * w;
+    const zoneFill = (side) => {
+      if (nav.phase === 'reached' && nav.dir === side) return 'rgba(110, 231, 255, 0.30)';
+      if (nav.lock === side) return 'rgba(255, 255, 255, 0.03)';
+      return `rgba(110, 231, 255, ${armed ? 0.14 : 0.06})`;
+    };
+    const chevronFill = (side) => nav.lock === side
+      ? 'rgba(255, 255, 255, 0.25)'
+      : `rgba(110, 231, 255, ${armed ? 0.95 : 0.5})`;
+
+    ctx.fillStyle = zoneFill('prev');
+    ctx.fillRect(0, 0, leftEdge, h);
+    ctx.fillStyle = zoneFill('next');
+    ctx.fillRect(rightEdge, 0, w - rightEdge, h);
+
+    if (armed) {
+      // The middle you have to come back to is drawn: returning to just
+      // "somewhere between the lines" doesn't rearm.
+      const emphasise = nav.phase === 'reached' || nav.blocked;
+      ctx.fillStyle = `rgba(255, 255, 255, ${emphasise ? 0.13 : 0.06})`;
+      ctx.fillRect((c - exit) * w, 0, 2 * exit * w, h);
+    } else {
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.05)';
+      ctx.fillRect(NAV_ARM_REGION[0] * w, 0, (NAV_ARM_REGION[1] - NAV_ARM_REGION[0]) * w, h);
+    }
+
+    ctx.save();
+    ctx.setLineDash([3, 3]);
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = `rgba(110, 231, 255, ${armed ? 0.75 : 0.35})`;
+    ctx.beginPath();
+    ctx.moveTo(leftEdge, 0);
+    ctx.lineTo(leftEdge, h);
+    ctx.moveTo(rightEdge, 0);
+    ctx.lineTo(rightEdge, h);
+    ctx.stroke();
+    ctx.restore();
+
+    ctx.font = '600 18px -apple-system, BlinkMacSystemFont, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = chevronFill('prev');
+    ctx.fillText('‹', leftEdge / 2, h * 0.42);
+    ctx.fillStyle = chevronFill('next');
+    ctx.fillText('›', (rightEdge + w) / 2, h * 0.42);
+  }
+
+  if (!landmarks) return;
+
+  const X = (p) => (1 - p.x) * w;
+  const Y = (p) => p.y * h;
+  const color = pose === 'open' ? 'rgba(110, 231, 255, 0.9)'
+    : pose === 'point' ? 'rgba(255, 255, 255, 0.9)'
+    : 'rgba(170, 170, 185, 0.7)';
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  for (const [a, b] of HAND_CONNECTIONS) {
+    ctx.moveTo(X(landmarks[a]), Y(landmarks[a]));
+    ctx.lineTo(X(landmarks[b]), Y(landmarks[b]));
+  }
+  ctx.stroke();
+  for (const p of landmarks) {
+    ctx.beginPath();
+    ctx.arc(X(p), Y(p), 1.8, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  if (pose === 'point') {
+    const tip = landmarks[8];
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(X(tip), Y(tip), 4, 0, Math.PI * 2);
+    ctx.fill();
+    return;
+  }
+
+  if (nav.x === null || frame.palmY === null) return;
+  const mx = nav.x * w;
+  const my = frame.palmY * h;
+  const markerColor = nav.phase === 'idle' ? '#ffc46e' : nav.phase === 'reached' ? '#ffffff' : '#6ee7ff';
+  ctx.fillStyle = markerColor;
+  ctx.beginPath();
+  ctx.arc(mx, my, 5, 0, Math.PI * 2);
+  ctx.fill();
+  if (nav.phase === 'idle' && nav.settleStartT !== null) {
+    const progress = Math.min(1, (nowMs - nav.settleStartT) / NAV_ARM_DWELL_MS);
+    ctx.strokeStyle = markerColor;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(mx, my, 9, -Math.PI / 2, -Math.PI / 2 + progress * Math.PI * 2);
+    ctx.stroke();
+  }
+}
+
+function statusText(frame, hasHand) {
+  if (!hasHand) return '';
+  if (frame.pose === 'point') return 'Pointer';
+  const nav = state.nav;
+  if (nav.phase === 'reached') return nav.dir === 'next' ? 'Next › · back to the middle' : '‹ Previous · back to the middle';
+  if (nav.phase === 'armed') return nav.blocked ? 'Back to the middle, then reach' : 'Ready · reach ‹ or ›';
+  if (frame.pose !== 'open') return '';
+  const inRegion = nav.x !== null && nav.x >= NAV_ARM_REGION[0] && nav.x <= NAV_ARM_REGION[1];
+  if (!inRegion) return 'Move your palm toward the middle';
+  if (!frame.armReady) return 'Palm to the camera, fingers up';
+  return 'Hold still…';
+}
+
+// ============================================================
+// Gesture model — cached locally, so an offline venue still works after
+// one successful run (the model's HTTP cache lifetime is only an hour).
+// ============================================================
+const MODEL_DB_NAME = 'gesture-deck';
+const MODEL_STORE = 'models';
+
+function idbRequest(req) {
+  return new Promise((resolve, reject) => {
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function openModelDb() {
+  const req = indexedDB.open(MODEL_DB_NAME, 1);
+  req.onupgradeneeded = () => req.result.createObjectStore(MODEL_STORE);
+  return idbRequest(req);
+}
+
+async function loadModel() {
+  let db = null;
+  try {
+    db = await openModelDb();
+    const hit = await idbRequest(db.transaction(MODEL_STORE).objectStore(MODEL_STORE).get(GESTURE_MODEL_URL));
+    if (hit) return { bytes: new Uint8Array(hit), raw: hit, db, fromCache: true };
+  } catch {
+    db = null; // no IndexedDB in this context — the network alone still works
+  }
+  const res = await fetch(GESTURE_MODEL_URL);
+  if (!res.ok) throw new Error(`Model download failed (HTTP ${res.status})`);
+  const raw = await res.arrayBuffer();
+  return { bytes: new Uint8Array(raw), raw, db, fromCache: false };
+}
+
+function writeModelCache(db, raw) {
+  try {
+    const store = db.transaction(MODEL_STORE, 'readwrite').objectStore(MODEL_STORE);
+    if (raw) store.put(raw, GESTURE_MODEL_URL);
+    else store.delete(GESTURE_MODEL_URL);
+  } catch { /* best effort */ }
+}
+
+// ============================================================
+// MediaPipe GestureRecognizer — lazy init, GPU with a CPU retry
+// (the SDK has no silent fallback, so we do it ourselves).
+// ============================================================
+async function ensureRecognizer() {
+  if (state.recognizer) return state.recognizer;
+  if (state.recognizerLoading) return state.recognizerLoading;
+
+  state.recognizerLoading = (async () => {
+    // Chrome remembers a failed module import for the page's lifetime, so a
+    // retry after a network blip needs a URL it hasn't seen yet.
+    const attempt = state.recognizerAttempts++;
+    const bundleUrl = attempt === 0 ? MEDIAPIPE_BUNDLE_URL : `${MEDIAPIPE_BUNDLE_URL}?retry=${attempt}`;
+    const { GestureRecognizer, FilesetResolver } = await import(bundleUrl);
+    const [fileset, model] = await Promise.all([FilesetResolver.forVisionTasks(MEDIAPIPE_WASM_DIR), loadModel()]);
+
+    const create = (delegate) => GestureRecognizer.createFromOptions(fileset, {
+      baseOptions: { modelAssetBuffer: model.bytes.slice(), delegate },
+      runningMode: 'VIDEO',
+      numHands: 1,
+    });
+    let recognizer;
+    try {
+      try {
+        recognizer = await create('GPU');
+      } catch (gpuErr) {
+        console.warn('GestureRecognizer: GPU delegate failed, retrying on CPU.', gpuErr);
+        recognizer = await create('CPU');
+      }
+    } catch (err) {
+      if (model.fromCache && model.db) writeModelCache(model.db, null); // a bad cached copy would fail forever
+      throw err;
+    }
+    if (!model.fromCache && model.db) writeModelCache(model.db, model.raw);
+    state.recognizer = recognizer;
+    return recognizer;
+  })();
+
+  try {
+    return await state.recognizerLoading;
+  } finally {
+    state.recognizerLoading = null;
+  }
+}
+
+// ============================================================
+// Frame loop — driven by requestVideoFrameCallback, guarded by a
+// generation token so toggling the camera can never stack two loops.
+// ============================================================
+let lastVideoTs = -1;
+function monotonicNow() {
+  let t = performance.now();
+  if (t <= lastVideoTs) t = lastVideoTs + 0.01;
+  lastVideoTs = t;
+  return t;
+}
+
+let trackingFrameHandle = null;
+
+// With no usable result, every machine should see "no hand" and time out
+// normally — never freeze on the last good frame (a stuck laser dot on the
+// audience's screen).
+function feedNoHand() {
+  try { processTrackingResult({}); } catch (err) { console.error(err); }
+}
+
+function startTrackingLoop() {
+  if (!el.camVideo.requestVideoFrameCallback) {
+    throw Object.assign(new Error('This browser can’t run hand tracking (no requestVideoFrameCallback) — use a recent Chrome.'), { name: 'NoFrameCallback' });
+  }
+  const myGen = state.cameraGeneration;
+
+  function loop() {
+    if (myGen !== state.cameraGeneration) return; // camera was toggled — stop silently
+    state.lastFrameT = performance.now();
+    state.framesSinceEnable++;
+    state.stalled = false;
+
+    if (state.recognizer && el.camVideo.readyState >= 2) {
+      let result = null;
+      try {
+        result = state.recognizer.recognizeForVideo(el.camVideo, monotonicNow());
+        state.recognizeErrors = 0;
+      } catch (err) {
+        console.error('recognizeForVideo failed', err);
+        if (++state.recognizeErrors === RECOGNIZE_ERROR_LIMIT) {
+          showToast('Hand tracking stopped working — turn the camera off and on again.', true);
+        }
+      }
+      if (result) {
+        try { processTrackingResult(result); } catch (err) { console.error(err); feedNoHand(); }
+      } else {
+        feedNoHand();
+      }
+    }
+
+    if (myGen !== state.cameraGeneration) return;
+    trackingFrameHandle = el.camVideo.requestVideoFrameCallback(loop);
+  }
+
+  trackingFrameHandle = el.camVideo.requestVideoFrameCallback(loop);
+}
+
+function stopTrackingLoop() {
+  if (trackingFrameHandle !== null && el.camVideo.cancelVideoFrameCallback) {
+    el.camVideo.cancelVideoFrameCallback(trackingFrameHandle);
+  }
+  trackingFrameHandle = null;
+}
+
+// A camera can grant access and still deliver nothing, or stop mid-talk (a
+// USB hiccup, another app grabbing it). Say so, and let the pointer and
+// preview time out instead of freezing.
+function startHealthCheck(myGen) {
+  clearInterval(state.healthTimer);
+  const id = setInterval(() => {
+    if (myGen !== state.cameraGeneration) {
+      clearInterval(id);
+      return;
+    }
+    if (document.hidden) return;
+    const quietMs = performance.now() - state.lastFrameT;
+    const limit = state.framesSinceEnable === 0 ? FRAME_FIRST_TIMEOUT_MS : FRAME_STALL_MS;
+    if (quietMs <= limit) return;
+    feedNoHand();
+    if (!state.stalled) {
+      state.stalled = true;
+      showToast('The camera isn’t sending any video — close other apps using it, then turn it off and on again.', true);
+    }
+  }, HEALTH_CHECK_MS);
+  state.healthTimer = id;
+}
+
+function videoAspect() {
+  const vw = el.camVideo.videoWidth;
+  const vh = el.camVideo.videoHeight;
+  return vw && vh ? vw / vh : 4 / 3;
+}
+
+function processTrackingResult(result) {
+  const nowMs = performance.now();
+  // One point of truth for "is there a usable hand this frame", so a short
+  // or malformed landmark array can't reach the pose/HUD code at all.
+  const landmarks = (result.landmarks && result.landmarks[0] && result.landmarks[0].length >= 21)
+    ? result.landmarks[0]
+    : null;
+
+  const frame = { landmarks, pose: 'none', armReady: false, palmY: null, palmLen: null };
+  let palmX = null, tipX = null, tipY = null, hand = null;
+  if (landmarks) {
+    const top = result.gestures && result.gestures[0] && result.gestures[0][0];
+    const name = top ? top.categoryName : 'None';
+    const score = top ? top.score : 0;
+    const aspect = videoAspect();
+    frame.pose = classifyPose(landmarks, name, score, aspect);
+    frame.armReady = isArmPose(landmarks, name, score, frame.pose, aspect);
+    const palm = palmCentroid(landmarks);
+    palmX = 1 - palm.x;
+    frame.palmY = palm.y;
+    frame.palmLen = palmLength(landmarks, aspect);
+    tipX = 1 - landmarks[8].x;
+    tipY = landmarks[8].y;
+    const handed = result.handedness && result.handedness[0] && result.handedness[0][0];
+    if (handed && handed.score >= HANDEDNESS_MIN_SCORE) hand = handed.categoryName;
+    state.lastHandSeenT = nowMs;
+  }
+  const hasHand = landmarks !== null;
+
+  const action = stepNavMachine(state.nav, {
+    hasHand, pose: frame.pose, armReady: frame.armReady, palmX, palmY: frame.palmY, palmLen: frame.palmLen, hand, nowMs,
+  });
+  if (action && !guideOpen()) navigate(action === 'next' ? 1 : -1, 'gesture');
+
+  updatePointerView(stepPointerMachine(state.pointer, { hasHand, isPointing: frame.pose === 'point', tipX, tipY, nowMs }));
+
+  el.app.classList.toggle('hand-active', nowMs - state.lastHandSeenT < HAND_ACTIVE_MS);
+  const label = statusText(frame, hasHand);
+  if (el.camStatusLabel.textContent !== label) el.camStatusLabel.textContent = label;
+
+  drawHud(frame, nowMs);
+}
+
+// ============================================================
+// Camera enable / disable — explicit opt-in only, never auto-prompts.
+// ============================================================
+function setCameraButtonLoading(loading) {
+  el.camEnableBtn.classList.toggle('loading', loading);
+  el.camEnableLabel.textContent = loading ? 'Starting camera · cancel' : 'Enable camera';
+  el.cameraToggleBtn.classList.toggle('busy', loading);
+  el.cameraToggleBtn.title = loading ? 'Starting camera — click to cancel'
+    : state.cameraOn ? 'Disable camera' : 'Enable camera (gesture control)';
+}
+
+function cameraErrorMessage(err) {
+  switch (err && err.name) {
+    case 'NotAllowedError':
+    case 'SecurityError':
+      return 'Camera blocked — allow it from the camera icon in the address bar, then try again.';
+    case 'NotFoundError':
+    case 'OverconstrainedError':
+      return 'No camera found.';
+    case 'NotReadableError':
+      return 'The camera is in use by another app.';
+    case 'NoMediaDevices':
+    case 'NoFrameCallback':
+    case 'DeadTrack':
+    case 'NoVideo':
+    case 'ModelTimeout':
+      return err.message;
+    default:
+      return 'Hand tracking failed to load — check your connection and try again.';
+  }
+}
+
+// Bumping the generation makes the in-flight enable back out (and release
+// the camera) at its next await; the button is free again immediately.
+function cancelEnable(silent = false) {
+  if (!state.cameraBusy) return;
+  state.cameraGeneration++;
+  state.cameraBusy = false;
+  setCameraButtonLoading(false);
+  if (!silent) showToast('Camera start cancelled');
+}
+
+async function enableCamera() {
+  if (state.cameraOn || state.cameraBusy) return;
+  state.cameraBusy = true;
+  const myGen = ++state.cameraGeneration;
+  const stale = () => myGen !== state.cameraGeneration;
+  setCameraButtonLoading(true);
+  if (!state.recognizer) showToast('Loading hand tracking…');
+
+  let stream = null;
+  const release = () => {
+    if (!stream) return;
+    stream.getTracks().forEach(t => t.stop()); // don't leave the camera LED on after a partial setup
+    if (el.camVideo.srcObject === stream) el.camVideo.srcObject = null;
+    if (state.stream === stream) state.stream = null;
+  };
+
+  try {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      throw Object.assign(new Error('Camera access isn’t available here — open this file directly in Chrome.'), { name: 'NoMediaDevices' });
+    }
+
+    const [streamResult, recognizerResult] = await Promise.allSettled([
+      navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, facingMode: 'user' }, audio: false }),
+      withTimeout(ensureRecognizer(), MODEL_TIMEOUT_MS, 'ModelTimeout',
+        'Hand tracking is taking too long to download — check your connection and try again.'),
+    ]);
+    if (streamResult.status === 'fulfilled') stream = streamResult.value;
+    if (stale()) { release(); return; } // cancelled or superseded while we waited
+
+    if (streamResult.status === 'rejected') throw streamResult.reason;
+    if (recognizerResult.status === 'rejected') throw recognizerResult.reason;
+
+    const track = stream.getVideoTracks()[0];
+    if (!track || track.readyState !== 'live') {
+      throw Object.assign(new Error('The camera stream ended before it started — try again.'), { name: 'DeadTrack' });
+    }
+
+    state.stream = stream;
+    el.camVideo.srcObject = stream;
+    // No `autoplay` on the <video>: it races this explicit play() in Chrome,
+    // and swallowing that rejection once let the UI say "camera on" while no
+    // frame ever decoded. A real failure lands in the catch — and so does a
+    // camera that grants access but never sends a frame, where play() would
+    // otherwise never settle and leave the button stuck on "Starting".
+    const playing = el.camVideo.play();
+    playing.catch(() => {}); // observed below; this just keeps a late rejection quiet after a timeout
+    await withTimeout(playing, PLAY_TIMEOUT_MS, 'NoVideo',
+      'The camera isn’t sending any video — close other apps using it, then try again.');
+    if (stale()) { release(); return; }
+
+    // Match the preview to the stream's real shape so the HUD lines up with
+    // the picture even when the camera ignores the 640×480 request.
+    const vw = el.camVideo.videoWidth;
+    const vh = el.camVideo.videoHeight;
+    if (vw && vh) el.camPreview.style.aspectRatio = `${vw} / ${vh}`;
+
+    // Before any state/UI flips, so a throw here leaves nothing marked "on".
+    state.framesSinceEnable = 0;
+    state.recognizeErrors = 0;
+    state.stalled = false;
+    state.lastFrameT = performance.now();
+    startTrackingLoop();
+
+    track.addEventListener('ended', () => {
+      if (state.stream !== stream) return;
+      disableCamera();
+      showToast('Camera disconnected', true);
+    });
+
+    state.cameraOn = true;
+    el.camPreview.classList.add('active');
+    el.camEnableBtn.classList.add('hidden');
+    el.cameraToggleBtn.classList.add('active');
+    el.camStatusDot.classList.add('live');
+    startHealthCheck(myGen);
+
+    if (!state.hasShownGuideOnce) {
+      state.hasShownGuideOnce = true;
+      openGuide();
+    } else {
+      showToast('Camera on — show your palm near the middle to start');
+    }
+  } catch (err) {
+    release();
+    if (!stale()) {
+      console.error(err);
+      showToast(cameraErrorMessage(err), true);
+    }
+  } finally {
+    // A cancel already reset these — and a newer enable may own them now.
+    if (!stale()) {
+      state.cameraBusy = false;
+      setCameraButtonLoading(false);
+    }
+  }
+}
+
+function disableCamera() {
+  if (!state.cameraOn) return;
+  state.cameraGeneration++; // stops the tracking loop and the health check
+  stopTrackingLoop();
+  clearInterval(state.healthTimer);
+  state.healthTimer = null;
+
+  if (state.stream) {
+    state.stream.getTracks().forEach(t => t.stop());
+    state.stream = null;
+  }
+  el.camVideo.srcObject = null;
+
+  state.cameraOn = false;
+  el.camPreview.classList.remove('active');
+  el.camEnableBtn.classList.remove('hidden');
+  el.cameraToggleBtn.classList.remove('active');
+  el.cameraToggleBtn.title = 'Enable camera (gesture control)';
+  el.camStatusDot.classList.remove('live');
+  el.camStatusLabel.textContent = '';
+  el.app.classList.remove('hand-active');
+  prepCanvas(el.camOverlay, 2);
+  stopPointerRender();
+
+  state.nav = createNavMachine();
+  state.pointer = createPointerMachine();
+  state.lastHandSeenT = -Infinity;
+}
+
+el.camEnableBtn.addEventListener('click', () => {
+  if (state.cameraBusy) cancelEnable();
+  else enableCamera();
+});
+el.cameraToggleBtn.addEventListener('click', () => {
+  if (state.cameraBusy) cancelEnable();
+  else if (state.cameraOn) disableCamera();
+  else enableCamera();
+});
+</script>
+</body>
+</html>

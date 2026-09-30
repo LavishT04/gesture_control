@@ -1,0 +1,13 @@
+{
+  "name": "gesture-deck",
+  "version": "1.0.0",
+  "description": "Present PDF or image decks hands-free with webcam hand tracking. One HTML file, no build step.",
+  "private": true,
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "scripts": {
+    "test": "node --test tests/engine.test.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
