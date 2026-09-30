@@ -139,7 +139,7 @@ After any change run the tests (below). If a change should alter behaviour on pu
 
 The camera preview (zones, skeleton, palm marker, status text) is drawn from the same frames.
 
-The gesture logic is written as **pure functions with no DOM access**: landmarks and timestamps go in, decisions come out. That's why the tests can run without a camera or a browser. [`docs/GUIDE.md`](docs/GUIDE.md) explains the design, the bugs found along the way, and how to rebuild or extend it with an AI agent.
+The gesture logic is written as **pure functions with no DOM access**: landmarks and timestamps go in, decisions come out. That's why the tests can run without a camera or a browser. [`Guide/GUIDE.md`](Guide/GUIDE.md) explains the design, the bugs found along the way, and how to rebuild or extend it with an AI agent.
 
 ```
 gesture-deck/
@@ -148,7 +148,7 @@ gesture-deck/
 │   └── sample-deck.pdf   a six-slide deck that explains the gestures
 ├── tests/
 │   └── engine.test.mjs   unit tests for the gesture logic
-├── docs/
+├── Guide/
 │   └── GUIDE.md          stack, rebuilding it with an AI agent, use cases
 ├── README.md
 ├── LICENSE
@@ -164,7 +164,7 @@ There is no build step: edit `index.html`, reload the page.
 npm test
 ```
 
-(Or `node --test tests/engine.test.mjs`.) The tests were written and run on Node 22; Node 18 or newer should work. They extract the gesture engine from `index.html` (between the `@engine:begin` and `@engine:end` comments) and run it against synthetic hand landmarks and timelines, so they test the code that ships, not a copy. They cover reaching, hand movements that shouldn't change slides, hand loss and hand switching, tracking at 15 fps, pose detection and the laser pointer. The rendering and camera code is not covered; see the [guide](docs/GUIDE.md#test-without-a-camera) for how to test it with a fake webcam.
+(Or `node --test tests/engine.test.mjs`.) The tests were written and run on Node 22; Node 18 or newer should work. They extract the gesture engine from `index.html` (between the `@engine:begin` and `@engine:end` comments) and run it against synthetic hand landmarks and timelines, so they test the code that ships, not a copy. They cover reaching, hand movements that shouldn't change slides, hand loss and hand switching, tracking at 15 fps, pose detection and the laser pointer. The rendering and camera code is not covered; see the [guide](Guide/GUIDE.md#test-without-a-camera) for how to test it with a fake webcam.
 
 ## Known limitations
 
